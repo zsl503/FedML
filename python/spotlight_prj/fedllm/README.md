@@ -204,7 +204,7 @@ comm_args:
   is_mobile: 0
 
 tracking_args:
-  enable_wandb: False
+  enable_wandb: true
   wandb_only_server: True
 
 ```

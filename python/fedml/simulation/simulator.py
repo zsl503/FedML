@@ -23,7 +23,8 @@ from ..constants import (
 )
 from ..core import ClientTrainer, ServerAggregator
 
-
+import sys
+sys.path.append('/home/zsl503/code/FedML/')
 class SimulatorSingleProcess:
     def __init__(self, args, device, dataset, model, client_trainer=None, server_aggregator=None):
         from .sp.classical_vertical_fl.vfl_api import VflFedAvgAPI
@@ -36,6 +37,8 @@ class SimulatorSingleProcess:
         from .sp.fedopt.fedopt_api import FedOptAPI
         from .sp.hierarchical_fl.trainer import HierarchicalTrainer
         from .sp.turboaggregate.TA_trainer import TurboAggregateTrainer
+        from my_research.sp_fedavg_cifar10_resnet20_example.MyAvgAPI_1 import MyAvgAPI_1
+        from my_research.sp_fedavg_cifar10_resnet20_example.MyAvgAPI_2 import MyAvgAPI_2
 
         if args.federated_optimizer == FedML_FEDERATED_OPTIMIZER_FEDAVG:
             self.fl_trainer = FedAvgAPI(args, device, dataset, model)
@@ -57,6 +60,10 @@ class SimulatorSingleProcess:
             self.fl_trainer = TurboAggregateTrainer(dataset, model, device, args)
         elif args.federated_optimizer == FedML_FEDERATED_OPTIMIZER_CLASSICAL_VFL:
             self.fl_trainer = VflFedAvgAPI(args, device, dataset, model)
+        elif args.federated_optimizer == "MyAgg-1":
+            self.fl_trainer = MyAvgAPI_1(args, device, dataset, model)
+        elif args.federated_optimizer == "MyAgg-2":
+            self.fl_trainer = MyAvgAPI_2(args, device, dataset, model)
 
         # elif args.fl_trainer == FedML_FEDERATED_OPTIMIZER_DECENTRALIZED_FL:
         #     self.fl_trainer = FedML_decentralized_fl()

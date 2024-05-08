@@ -49,7 +49,7 @@ comm_args:
   grpc_ipconfig_path: ./config/grpc_ipconfig.csv
 
 tracking_args:
-  enable_wandb: false
+  enable_wandb: true
 
 attack_args:
   enable_attack: true

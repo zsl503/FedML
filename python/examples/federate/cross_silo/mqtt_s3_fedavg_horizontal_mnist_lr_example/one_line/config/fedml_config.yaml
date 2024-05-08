@@ -49,7 +49,7 @@ comm_args:
 tracking_args:
   log_file_dir: ./log
   local_log_output_path: ./log
-  enable_wandb: false
+  enable_wandb: true
   wandb_key: ee0b5f53d949c84cee7decbe7a619e63fb1f8408
   wandb_project: fedml
   wandb_name: fedml_torch_fedavg_mnist_lr

@@ -36,7 +36,7 @@ comm_args:
 
 tracking_args:
   enable_tracking: false # logging to MLOps
-  enable_wandb: false
+  enable_wandb: true
   log_file_dir: ./log
   run_name: fedml_torch_fedavg_mnist_lr
   mlops_api_key: c9356b9c4ce44363bb66366b210201

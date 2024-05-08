@@ -78,7 +78,6 @@ class ModelTrainerCLS(ClientTrainer):
 
     def train_iterations(self, train_data, device, args):
         model = self.model
-
         model.to(device)
         model.train()
 

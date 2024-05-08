@@ -139,7 +139,7 @@ class FedMLServerManager(FedMLCommManager):
                     "tracking_args": {
                         "wandb_project": "fedml",
                         "wandb_name": "fedml_torch_fedavg_mnist_lr",
-                        "wandb_key": "ee0b5f53d949c84cee7decbe7a629e63fb2f8408",
+                        "wandb_key": "a99f78c4ef64112ea21638b130a1e587e06aa95f",
                         "enable_wandb": False,
                         "log_file_dir": "./log",
                     },
