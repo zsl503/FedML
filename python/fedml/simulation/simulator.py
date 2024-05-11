@@ -1,4 +1,5 @@
 
+import importlib
 from ..constants import (
     FedML_FEDERATED_OPTIMIZER_BASE_FRAMEWORK,
     FedML_FEDERATED_OPTIMIZER_FEDAVG,
@@ -37,8 +38,6 @@ class SimulatorSingleProcess:
         from .sp.fedopt.fedopt_api import FedOptAPI
         from .sp.hierarchical_fl.trainer import HierarchicalTrainer
         from .sp.turboaggregate.TA_trainer import TurboAggregateTrainer
-        from my_research.sp_fedavg_cifar10_resnet20_example.MyAvgAPI_1 import MyAvgAPI_1
-        from my_research.sp_fedavg_cifar10_resnet20_example.MyAvgAPI_2 import MyAvgAPI_2
 
         if args.federated_optimizer == FedML_FEDERATED_OPTIMIZER_FEDAVG:
             self.fl_trainer = FedAvgAPI(args, device, dataset, model)
@@ -60,15 +59,13 @@ class SimulatorSingleProcess:
             self.fl_trainer = TurboAggregateTrainer(dataset, model, device, args)
         elif args.federated_optimizer == FedML_FEDERATED_OPTIMIZER_CLASSICAL_VFL:
             self.fl_trainer = VflFedAvgAPI(args, device, dataset, model)
-        elif args.federated_optimizer == "MyAgg-1":
-            self.fl_trainer = MyAvgAPI_1(args, device, dataset, model)
-        elif args.federated_optimizer == "MyAgg-2":
-            self.fl_trainer = MyAvgAPI_2(args, device, dataset, model)
-
-        # elif args.fl_trainer == FedML_FEDERATED_OPTIMIZER_DECENTRALIZED_FL:
-        #     self.fl_trainer = FedML_decentralized_fl()
-        else:
-            raise Exception("Exception")
+        elif "MyAgg-" in args.federated_optimizer:
+            num = args.federated_optimizer.split('-')[-1]
+            module_name = f"my_research.sp_fedavg_cifar10_resnet20_example.MyAvgAPI_{num}"
+            class_name = f"MyAvgAPI_{num}"
+            module = importlib.import_module(module_name)
+            MyAgg = getattr(module, class_name)
+            self.fl_trainer = MyAgg(args, device, dataset, model)
 
     def run(self):
         self.fl_trainer.train()

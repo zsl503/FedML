@@ -1,0 +1,49 @@
+common_args:
+  training_type: "simulation"
+  random_seed: 0
+
+data_args:
+  dataset: "cifar10"
+  data_cache_dir: ~/.cache/fedml_data
+  partition_method: "hetero"
+  partition_alpha: 0.5
+
+model_args:
+  model: "resnet20"
+
+train_args:
+  federated_optimizer: "MyAgg-4"
+  client_id_list: "[]"
+  client_num_in_total: 5
+  client_num_per_round: 5
+  comm_round: 100
+  epochs: 5
+  batch_size: 32
+  client_optimizer: sgd
+  learning_rate: 0.03
+  weight_decay: 0.001
+
+agg_args:
+  agg_unselect_layer: ["bn", "downsample", "fc", "1.conv2", "2.conv1", "2.conv2"] # 不选择：含任一列表串的层
+  agg_all_select_layer: [] # 选择：含全部列表串的层
+  agg_any_select_layer: [] # 选择：含任一列表串的层
+
+validation_args:
+  frequency_of_the_test: 4
+
+device_args:
+  using_gpu: true
+  gpu_id: 0
+
+comm_args:
+  backend: "sp"
+  is_mobile: 0
+
+tracking_args:
+   # When running on MLOps platform(open.fedml.ai), the default log path is at ~/.fedml/fedml-client/fedml/logs/ and ~/.fedml/fedml-server/fedml/logs/
+  enable_wandb: true
+  wandb_key: a99f78c4ef64112ea21638b130a1e587e06aa95f
+  # wandb_entity: fedml-ai
+  wandb_project: simulation
+  run_name: cifar10_resnet20_c5p5e5_notagg
+  # mlops: true
