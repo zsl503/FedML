@@ -41,5 +41,5 @@ tracking_args:
   wandb_key: a99f78c4ef64112ea21638b130a1e587e06aa95f
   # wandb_entity: fedml-ai
   wandb_project: simulation
-  run_name: cifar10_resnet20_c5p5e5
+  run_name: cif10_rn20_c5p5e5
   # mlops: true

@@ -12,7 +12,7 @@ model_args:
   model: "resnet20"
 
 train_args:
-  federated_optimizer: "MyAgg-3"
+  federated_optimizer: "MyAgg-6"
   client_id_list: "[]"
   client_num_in_total: 5
   client_num_per_round: 5
@@ -24,10 +24,22 @@ train_args:
   weight_decay: 0.001
 
 agg_args:
-  agg_unselect_layer: ["bn", "downsample", "fc", "1.conv2", "2.conv1", "2.conv2"] # 不选择：含任一列表串的层
+  agg_unselect_layer: ["downsample", "fc", "1.conv2", "2.conv1", "2.conv2", "num_batches_tracked"] # 不选择：含任一列表串的层
   agg_all_select_layer: [] # 选择：含全部列表串的层
   agg_any_select_layer: [] # 选择：含任一列表串的层
 
+  agg_mod_list: [5] # 优先级从左到右
+  agg_mod_dict: { 
+    5: {'agg_unselect_layer': ["num_batches_tracked"]}
+    } # 优先级从左到右
+
+  cka_select_topk: 3 # 从相似度看，top-k总会包含其本身，对于client i，top-3汇聚，除了自身外，还有另外两个client
+  cka_unselect_layer: ["num_batches_tracked"] # 不选择：含任一列表串的层
+  cka_all_select_layer: [] # 选择：含全部列表串的层
+  cka_any_select_layer: ["downsample", "fc", "1.conv2", "2.conv1", "2.conv2"] # 选择：含任一列表串的层
+  cka_low_thresh: 0
+  cka_high_thresh: 1
+  
 validation_args:
   frequency_of_the_test: 4
 
@@ -45,5 +57,5 @@ tracking_args:
   wandb_key: a99f78c4ef64112ea21638b130a1e587e06aa95f
   # wandb_entity: fedml-ai
   wandb_project: simulation
-  run_name: cif10_rn20_c5p5e5_layer_part
+  run_name: cif10_rn20_c5p5e5_m5top3
   # mlops: true

@@ -1,10 +1,10 @@
-# 分层聚合，能够决定间隔多少轮聚合某一层
+# 不聚合，各学各的
 import copy
 from datetime import datetime
 import logging
 import os
 import random
-from typing import Dict, List, OrderedDict
+from typing import OrderedDict
 import fedml
 from fedml.ml.trainer.my_model_trainer_classification import ModelTrainerCLS
 import torch.nn as nn
@@ -21,18 +21,17 @@ TIME = datetime.now().strftime('%Y%m%d%H%M')
 
 
 def save_model_param(model_params,
-                     round_idx,
-                     path_tag,
-                     pre_desc=None,
-                     post_desc=None,
-                     is_grad=True):
+                        round_idx,
+                        path_tag,
+                        pre_desc=None,
+                        post_desc=None,
+                        is_grad=True):
     # 保存全局权重，作为实验
     if pre_desc is None:
         pre_desc = path_tag
 
     save_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                            'grad_lists' if is_grad else 'weight_lists', TIME,
-                            path_tag)
+                            'grad_lists' if is_grad else 'weight_lists', TIME, path_tag)
     os.makedirs(save_dir, exist_ok=True)
     if post_desc is None:
         path = os.path.join(save_dir, f'{pre_desc}_round_{round_idx}.pt')
@@ -105,43 +104,24 @@ def get_model_gradient(model):
     return grads
 
 
-class LayerFilter:
-
-    def __init__(self,
-                 unselect_keys: List[str] = None,
-                 all_select_keys: List[str] = None,
-                 any_select_keys: List[str] = None) -> None:
-        self.update_filter(unselect_keys, all_select_keys, any_select_keys)
-
-    def update_filter(self,
-                      unselect_keys: List[str] = None,
-                      all_select_keys: List[str] = None,
-                      any_select_keys: List[str] = None):
-        self.unselect_keys = unselect_keys if unselect_keys is not None else []
-        self.all_select_keys = all_select_keys if all_select_keys is not None else []
-        self.any_select_keys = any_select_keys if any_select_keys is not None else []
-
-    def __call__(self, param_dict):
-        if len(self.unselect_keys + self.all_select_keys + self.any_select_keys) == 0:
-            return param_dict
-        return {
-            layer_key: param
-            for layer_key, param in param_dict.items()
-            if (len(self.unselect_keys) == 0 or all(
-                key not in layer_key for key in self.unselect_keys)) and (
-                    len(self.all_select_keys) == 0 or all(
-                        key in layer_key
-                        for key in self.all_select_keys)) and (
-                            len(self.any_select_keys) == 0 or any(
-                                key in layer_key
-                                for key in self.any_select_keys))
-        }
-
-    def __str__(self) -> str:
-        return f"unselect_keys:{self.unselect_keys}  all_select_keys:{self.all_select_keys}  any_select_keys:{self.any_select_keys}"
+def filter_param_by_keys(param_dict,
+                         unselect_keys=None,
+                         all_select_keys=None,
+                         any_select_keys=None):
+    # filtered_weight_list = weight_list
+    return {
+        layer_key: param
+        for layer_key, param in param_dict.items()
+        if (unselect_keys is None or len(unselect_keys) == 0 or all(
+            key not in layer_key for key in unselect_keys)) and
+        (all_select_keys is None or len(all_select_keys) == 0 or all(
+            key in layer_key for key in all_select_keys)) and (
+                any_select_keys is None or len(any_select_keys) == 0 or any(
+                    key in layer_key for key in any_select_keys))
+    }
 
 
-class MyTrainer_5(ModelTrainerCLS):
+class MyTrainer_4(ModelTrainerCLS):
 
     def __init__(self, model, args):
         super().__init__(model, args)
@@ -193,7 +173,7 @@ class MyTrainer_5(ModelTrainerCLS):
                 sum(epoch_loss) / len(epoch_loss)))
 
             grad_list.append(get_model_gradient(self.model))
-
+        
         total_grad = weight_sub(self.model.state_dict(), old_model)
         return grad_list, total_grad
 
@@ -208,7 +188,7 @@ class Client:
         local_sample_number,
         args,
         device,
-        model_trainer: MyTrainer_5,
+        model_trainer: MyTrainer_4,
     ):
         self.client_idx = client_idx
         self.local_training_data = local_training_data
@@ -217,7 +197,7 @@ class Client:
 
         self.args = args
         self.device = device
-        self.model_trainer: MyTrainer_5 = model_trainer
+        self.model_trainer: MyTrainer_4 = model_trainer
 
     def update_local_dataset(self, client_idx, local_training_data,
                              local_test_data, local_sample_number):
@@ -230,28 +210,20 @@ class Client:
     def get_sample_number(self):
         return self.local_sample_number
 
-    def train(self, w_global, round_idx, post_layer_filter:LayerFilter = None, set_layer_filter:LayerFilter = None):
-        '''
-        set_layer_filter: 如果set_layer_filter不为空，则参数本地化时，只取用set_layer_filter后的参数
-        post_layer_filter: 如果post_layer_filter不为空，则提交参数时，只提交经过post_layer_filter的参数
-        '''
-        
-        self.model_trainer.set_model_params(w_global if set_layer_filter is None else set_layer_filter(w_global))
+    def train(self, w_global, round_idx):
+        # self.model_trainer.set_model_params(w_global)
 
-        _, total_grad = self.model_trainer.train(
+        grad_list, total_grad = self.model_trainer.train(
             self.local_training_data, self.device, self.args)
         # for index, g in enumerate(grad_list):
         #     save_model_gradient(g, round_idx, f'c{self.client_idx}', post_desc=f'{index}')
-        save_model_param(self.model_trainer.get_model_params(),
-                         round_idx,
-                         f'c{self.client_idx}',
-                         is_grad=False)
-        save_model_param(total_grad, round_idx, f'c{self.client_idx}_total') 
 
-        if post_layer_filter is None:
-            return weight_sub(self.model_trainer.get_model_params(), w_global)
-        else:
-            return weight_sub(post_layer_filter(self.model_trainer.get_model_params()), post_layer_filter(w_global))
+        save_model_param(self.model_trainer.get_model_params(), round_idx, f'c{self.client_idx}', is_grad=False)
+        save_model_param(total_grad, round_idx, f'c{self.client_idx}_total')
+
+        return filter_param_by_keys(total_grad, self.args.agg_unselect_layer,
+                                    self.args.agg_all_select_layer,
+                                    self.args.agg_any_select_layer)
 
     def local_test(self, b_use_test_dataset):
         if b_use_test_dataset:
@@ -262,7 +234,7 @@ class Client:
         return metrics
 
 
-class MyAvgAPI_5(object):
+class MyAvgAPI_4(object):
 
     def __init__(self, args: fedml.arguments.Arguments, device, dataset,
                  model):
@@ -290,23 +262,19 @@ class MyAvgAPI_5(object):
         self.test_data_local_dict = test_data_local_dict
 
         logging.info("model = {}".format(model))
-        self.model_trainer = MyTrainer_5(model, args)
+        self.model_trainer = MyTrainer_4(model, args)
         # self.model_trainer = create_model_trainer(model, args)
 
-        self.default_unselect_keys = args.agg_unselect_layer
-        self.default_all_select_keys = args.agg_all_select_layer
-        self.default_any_select_keys = args.agg_any_select_layer
+        self.model_trainer.get_model_params()
+        filter_param = filter_param_by_keys(
+            self.model_trainer.get_model_params(), args.agg_unselect_layer,
+            args.agg_all_select_layer, args.agg_any_select_layer)
+        logging.info(
+            f"agg_unselect_layer={args.agg_unselect_layer}\tagg_all_select_layer={args.agg_all_select_layer}\tagg_any_select_layer={args.agg_any_select_layer}"
+        )
 
-        self.filter_mod_list:List[int] = args.agg_mod_list
-        self.filter_mod_dict:Dict[int,Dict[str, List[str]]] = args.agg_mod_dict
-        logging.info(f'-----------Default Filter Setting-----------')
-        logging.info(f'default_unselect_keys:{self.default_unselect_keys}')
-        logging.info(f'default_all_select_keys:{self.default_all_select_keys}')
-        logging.info(f'default_any_select_keys:{self.default_any_select_keys}')
-        logging.info(f'-----------Mod Filter Setting-----------')
-        logging.info(f'filter_mod_list:{self.filter_mod_list}')
-        logging.info(f'filter_mod_dict:{self.filter_mod_dict}')
-        
+        logging.info(f"selected_layer={filter_param.keys()}")
+
         self.model = model
         logging.info("self.model_trainer = {}".format(self.model_trainer))
 
@@ -320,66 +288,32 @@ class MyAvgAPI_5(object):
             c = Client(client_idx, train_data_local_dict[client_idx],
                        test_data_local_dict[client_idx],
                        train_data_local_num_dict[client_idx], self.args,
-                       self.device,
-                       MyTrainer_5(copy.deepcopy(model), args)
-                       #    self.model_trainer,
+                       self.device, 
+                       MyTrainer_4(copy.deepcopy(model), args)
+                    #    self.model_trainer,
                        )
-
+            
             self.client_list.append(c)
         logging.info("############setup_clients (END)#############")
 
     def train(self):
+        w_global = None
+        # w_global = self.model_trainer.get_model_params()
+        # w_global = filter_param_by_keys(w_global, self.args.agg_unselect_layer,
+        #                                 self.args.agg_all_select_layer,
+        #                                 self.args.agg_any_select_layer)
+        
         mlops.log_training_status(
             mlops.ClientConstants.MSG_MLOPS_CLIENT_STATUS_TRAINING)
         mlops.log_aggregation_status(
             mlops.ServerConstants.MSG_MLOPS_SERVER_STATUS_RUNNING)
         mlops.log_round_info(self.args.comm_round, -1)
-
         for round_idx in range(self.args.comm_round):
 
             logging.info(
                 "################Communication round : {}".format(round_idx))
-            
-            if round_idx == 0:
-                # 第一轮全部初始化为同值
-                set_layer_filter = LayerFilter()
-                post_layer_filter = LayerFilter(
-                        unselect_keys = self.default_unselect_keys,
-                        all_select_keys = self.default_all_select_keys,
-                        any_select_keys = self.default_any_select_keys,
-                    )
-            else:
-                set_layer_filter.update_filter(
-                    unselect_keys = post_layer_filter.unselect_keys,
-                    all_select_keys = post_layer_filter.all_select_keys,
-                    any_select_keys = post_layer_filter.any_select_keys                        
-                )
-                mod = 0
-                for i in self.filter_mod_list:
-                    if round_idx % i == 0:
-                        mod = i
-                        break
-                # 如果有满足mod条件的
-                if mod != 0:
-                    logging.info(f"Satisfy condition {round_idx}%{mod}==0")
-                    post_layer_filter.update_filter(
-                        unselect_keys = self.filter_mod_dict[mod].get('agg_unselect_layer',None),
-                        all_select_keys = self.filter_mod_dict[mod].get('agg_all_select_layer',None),
-                        any_select_keys = self.filter_mod_dict[mod].get('agg_any_select_layer',None)
-                    )
-                else:
-                    post_layer_filter.update_filter(
-                        unselect_keys = self.default_unselect_keys,
-                        all_select_keys = self.default_all_select_keys,
-                        any_select_keys = self.default_any_select_keys,
-                    )
-                
-            w_global = self.model_trainer.get_model_params()
 
-            logging.info(f"post_layer_filter: {post_layer_filter}")
-            logging.info(f"set_layer_filter:{set_layer_filter}")
-            
-            g_locals = []
+            # g_locals = []
             """
             for scalability: following the original FedAvg algorithm, we uniformly sample a fraction of clients in each round.
             Instead of changing the 'Client' instances, our implementation keeps the 'Client' instances and then updates their local dataset 
@@ -388,8 +322,6 @@ class MyAvgAPI_5(object):
                 round_idx, self.args.client_num_in_total,
                 self.args.client_num_per_round)
             logging.info("client_indexes = " + str(client_indexes))
-
-
             for idx in client_indexes:
                 # update dataset
                 client: Client = self.client_list[idx]
@@ -399,23 +331,22 @@ class MyAvgAPI_5(object):
                             event_started=True,
                             event_value="{}_{}".format(str(round_idx),
                                                        str(idx)))
-                
-                g = client.train(w_global, round_idx=round_idx, post_layer_filter=post_layer_filter, set_layer_filter=set_layer_filter)
+                g = client.train(w_global, round_idx=round_idx)
 
                 mlops.event("train",
                             event_started=False,
                             event_value="{}_{}".format(str(round_idx),
                                                        str(idx)))
                 # self.logging.info("local weights = " + str(w))
-                g_locals.append((client.get_sample_number(), g))
+                # g_locals.append((client.get_sample_number(), g))
 
             # update global weights
             mlops.event("agg", event_started=True, event_value=str(round_idx))
-            g_global = self._aggregate(g_locals)
-            save_model_param(g_global, round_idx, "server")
+            # g_global = self._aggregate(g_locals)
+            # save_model_param(g_global, round_idx, "server")
 
-            w_global = weight_add(post_layer_filter(w_global), g_global)
-            self.model_trainer.set_model_params(w_global)
+            # w_global = weight_add(w_global, g_global)
+            # self.model_trainer.set_model_params(w_global)
             mlops.event("agg", event_started=False, event_value=str(round_idx))
 
             # test results
@@ -424,7 +355,10 @@ class MyAvgAPI_5(object):
                 self._local_test_on_all_clients(round_idx)
             # per {frequency_of_the_test} round
             elif round_idx % self.args.frequency_of_the_test == 0:
-                self._local_test_on_all_clients(round_idx)
+                if self.args.dataset.startswith("stackoverflow"):
+                    self._local_test_on_validation_set(round_idx)
+                else:
+                    self._local_test_on_all_clients(round_idx)
 
             mlops.log_round_info(self.args.comm_round, round_idx)
 
@@ -541,8 +475,7 @@ class MyAvgAPI_5(object):
                 continue
 
             # train data
-            train_local_metrics = self.client_list[client_idx].local_test(
-                False)
+            train_local_metrics = self.client_list[client_idx].local_test(False)
             train_metrics["num_samples"].append(
                 copy.deepcopy(train_local_metrics["test_total"]))
             train_metrics["num_correct"].append(
@@ -572,17 +505,13 @@ class MyAvgAPI_5(object):
                         test_metrics["losses"][-1],
                         # per acc
                         f"Train/c{client_idx}-perAcc":
-                        (train_metrics["num_correct"][-1] /
-                         train_metrics["num_samples"][-1]),
+                        (train_metrics["num_correct"][-1] / train_metrics["num_samples"][-1]),
                         f"Train/c{client_idx}-perLoss":
-                        (train_metrics["losses"][-1] /
-                         train_metrics["num_samples"][-1]),
+                        (train_metrics["losses"][-1] / train_metrics["num_samples"][-1]),
                         f"Test/c{client_idx}-perAcc":
-                        (test_metrics["num_correct"][-1] /
-                         test_metrics["num_samples"][-1]),
+                        (test_metrics["num_correct"][-1] / test_metrics["num_samples"][-1]),
                         f"Test/c{client_idx}-perLoss":
-                        (test_metrics["losses"][-1] /
-                         test_metrics["num_samples"][-1]),
+                        (test_metrics["losses"][-1] / test_metrics["num_samples"][-1]),
                         "round":
                         round_idx
                     },
@@ -602,13 +531,12 @@ class MyAvgAPI_5(object):
 
         stats = {"training_acc": train_acc, "training_loss": train_loss}
         if self.args.enable_wandb:
-            wandb.log(
-                {
-                    "Train/Acc": train_acc,
-                    "Train/Loss": train_loss,
-                    "round": round_idx
-                },
-                step=round_idx)
+            wandb.log({
+                "Train/Acc": train_acc,
+                "Train/Loss": train_loss,
+                "round": round_idx
+            },
+            step=round_idx)
 
         mlops.log({"Train/Acc": train_acc, "round": round_idx})
         mlops.log({"Train/Loss": train_loss, "round": round_idx})
@@ -626,4 +554,67 @@ class MyAvgAPI_5(object):
 
         mlops.log({"Test/Acc": test_acc, "round": round_idx})
         mlops.log({"Test/Loss": test_loss, "round": round_idx})
+        logging.info(stats)
+
+    def _local_test_on_validation_set(self, round_idx):
+
+        logging.info(
+            "################local_test_on_validation_set : {}".format(
+                round_idx))
+
+        if self.val_global is None:
+            self._generate_validation_set()
+
+        client = self.client_list[0]
+        client.update_local_dataset(0, None, self.val_global, None)
+        # test data
+        test_metrics = client.local_test(True)
+
+        if self.args.dataset == "stackoverflow_nwp":
+            test_acc = test_metrics["test_correct"] / test_metrics["test_total"]
+            test_loss = test_metrics["test_loss"] / test_metrics["test_total"]
+            stats = {"test_acc": test_acc, "test_loss": test_loss}
+            if self.args.enable_wandb:
+                wandb.log(
+                    {
+                        "Test/Acc": test_acc,
+                        "Test/Loss": test_loss,
+                        "round": round_idx
+                    },
+                    step=round_idx)
+
+            mlops.log({"Test/Acc": test_acc, "round": round_idx})
+            mlops.log({"Test/Loss": test_loss, "round": round_idx})
+
+        elif self.args.dataset == "stackoverflow_lr":
+            test_acc = test_metrics["test_correct"] / test_metrics["test_total"]
+            test_pre = test_metrics["test_precision"] / test_metrics[
+                "test_total"]
+            test_rec = test_metrics["test_recall"] / test_metrics["test_total"]
+            test_loss = test_metrics["test_loss"] / test_metrics["test_total"]
+            stats = {
+                "test_acc": test_acc,
+                "test_pre": test_pre,
+                "test_rec": test_rec,
+                "test_loss": test_loss,
+            }
+            if self.args.enable_wandb:
+                wandb.log(
+                    {
+                        "Test/Acc": test_acc,
+                        "Test/Pre": test_pre,
+                        "Test/Rec": test_rec,
+                        "Test/Loss": test_loss,
+                        "round": round_idx
+                    },
+                    step=round_idx)
+
+            mlops.log({"Test/Acc": test_acc, "round": round_idx})
+            mlops.log({"Test/Pre": test_pre, "round": round_idx})
+            mlops.log({"Test/Rec": test_rec, "round": round_idx})
+            mlops.log({"Test/Loss": test_loss, "round": round_idx})
+        else:
+            raise Exception("Unknown format to log metrics for dataset {}!" %
+                            self.args.dataset)
+
         logging.info(stats)

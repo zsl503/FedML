@@ -1,126 +1,19 @@
+# 分层ckA聚合+跨层，能够决定间隔多少轮聚合某一层，且这些层通过cka相似度选择top-k聚合+同 层梯度
 import copy
-from datetime import datetime
 import logging
-import os
 import random
-from typing import OrderedDict
+from typing import Dict, List, Tuple
 import fedml
 from fedml.ml.trainer.my_model_trainer_classification import ModelTrainerCLS
 import torch.nn as nn
-
-from fedml.core.alg_frame.client_trainer import ClientTrainer
 import numpy as np
 import torch
 import wandb
-
+from my_research.sp_fedavg_cifar10_resnet20_example.my_utils import *
 from fedml import mlops
-from fedml.ml.trainer.trainer_creator import create_model_trainer
-# from fedml.simulation.sp.fedavg.client import Client
-TIME = datetime.now().strftime('%Y%m%d%H%M')
 
 
-def save_model_param(model_params,
-                        round_idx,
-                        path_tag,
-                        pre_desc=None,
-                        post_desc=None,
-                        is_grad=True):
-    # 保存全局权重，作为实验
-    if pre_desc is None:
-        pre_desc = path_tag
-
-    save_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                            'grad_lists' if is_grad else 'weight_lists', TIME, path_tag)
-    os.makedirs(save_dir, exist_ok=True)
-    if post_desc is None:
-        path = os.path.join(save_dir, f'{pre_desc}_round_{round_idx}.pt')
-    else:
-        path = os.path.join(save_dir,
-                            f'{pre_desc}_round_{round_idx}_{post_desc}.pt')
-
-    logging.info(f"Save {path_tag} {round_idx} model params to '{path}'.")
-    torch.save(model_params, path)
-
-
-def weight_sub(weight_x, weight_y):
-    """
-    Calculate the difference between two model weights.
-
-    Args:
-        weight_x (dict): State dictionary of the first model.
-        weight_y (dict): State dictionary of the second model.
-    Returns:
-        dict: weight_x - weight_y
-    """
-    device = next(iter(weight_x.values())).device
-    # Create a new dictionary to store the weight differences
-    weight_diff = {}
-    # Iterate through the keys (parameter names) in weight_x
-    for key in weight_x.keys():
-        # Compute the difference between corresponding weight tensors
-        diff = weight_x[key].to(device) - weight_y[key].to(device)
-        # Store the difference in the weight_diff dictionary
-        weight_diff[key] = diff
-    return weight_diff
-
-
-def weight_add(weight_x, weight_y):
-    """
-    Calculate the addition result between two model weights.
-
-    Args:
-        weight_x (dict): State dictionary of the first model.
-        weight_y (dict): State dictionary of the second model.
-    Returns:
-        dict: weight_x + weight_y
-    """
-    # Create a new dictionary to store the weight differences
-    device = next(iter(weight_x.values())).device
-    weight_add = {}
-    # Iterate through the keys (parameter names) in weight_x
-    for key in weight_x.keys():
-        # Compute the difference between corresponding weight tensors
-        weight_add[key] = weight_x[key].to(device) + weight_y[key].to(device)
-    return weight_add
-
-
-def get_model_gradient(model):
-    """
-    Description:
-        - get norm gradients from model, and store in a OrderDict
-    
-    Args:
-        - model: (torch.nn.Module), torch model
-    
-    Returns:
-        - grads in OrderDict
-    """
-    grads = OrderedDict()
-    for name, params in model.named_parameters():
-        grad = params.grad
-        if grad is not None:
-            grads[name] = grad
-    return grads
-
-
-def filter_param_by_keys(param_dict,
-                         unselect_keys=None,
-                         all_select_keys=None,
-                         any_select_keys=None):
-    # filtered_weight_list = weight_list
-    return {
-        layer_key: param
-        for layer_key, param in param_dict.items()
-        if (unselect_keys is None or len(unselect_keys) == 0 or all(
-            key not in layer_key for key in unselect_keys)) and
-        (all_select_keys is None or len(all_select_keys) == 0 or all(
-            key in layer_key for key in all_select_keys)) and (
-                any_select_keys is None or len(any_select_keys) == 0 or any(
-                    key in layer_key for key in any_select_keys))
-    }
-
-
-class MyTrainer_4(ModelTrainerCLS):
+class MyTrainer_7(ModelTrainerCLS):
 
     def __init__(self, model, args):
         super().__init__(model, args)
@@ -172,7 +65,7 @@ class MyTrainer_4(ModelTrainerCLS):
                 sum(epoch_loss) / len(epoch_loss)))
 
             grad_list.append(get_model_gradient(self.model))
-        
+
         total_grad = weight_sub(self.model.state_dict(), old_model)
         return grad_list, total_grad
 
@@ -187,7 +80,7 @@ class Client:
         local_sample_number,
         args,
         device,
-        model_trainer: MyTrainer_4,
+        model_trainer: MyTrainer_7,
     ):
         self.client_idx = client_idx
         self.local_training_data = local_training_data
@@ -196,7 +89,7 @@ class Client:
 
         self.args = args
         self.device = device
-        self.model_trainer: MyTrainer_4 = model_trainer
+        self.model_trainer: MyTrainer_7 = model_trainer
 
     def update_local_dataset(self, client_idx, local_training_data,
                              local_test_data, local_sample_number):
@@ -209,20 +102,37 @@ class Client:
     def get_sample_number(self):
         return self.local_sample_number
 
-    def train(self, w_global, round_idx):
-        self.model_trainer.set_model_params(w_global)
+    def train(self,
+              w_global,
+              round_idx,
+              post_layer_filter: LayerFilter = None,
+              set_layer_filter: LayerFilter = None,
+              set_param:bool = True):
+        '''
+        set_layer_filter: 如果set_layer_filter不为空，则参数本地化时，只取用set_layer_filter后的参数
+        post_layer_filter: 如果post_layer_filter不为空，则提交参数时，只提交经过post_layer_filter的参数
+        '''
+        if set_param:
+            self.model_trainer.set_model_params(
+                w_global if set_layer_filter is
+                None else set_layer_filter(w_global))
 
-        grad_list, total_grad = self.model_trainer.train(
-            self.local_training_data, self.device, self.args)
+        _, total_grad = self.model_trainer.train(self.local_training_data,
+                                                 self.device, self.args)
         # for index, g in enumerate(grad_list):
         #     save_model_gradient(g, round_idx, f'c{self.client_idx}', post_desc=f'{index}')
-
-        save_model_param(self.model_trainer.get_model_params(), round_idx, f'c{self.client_idx}', is_grad=False)
+        save_model_param(self.model_trainer.get_model_params(),
+                         round_idx,
+                         f'c{self.client_idx}',
+                         is_grad=False)
         save_model_param(total_grad, round_idx, f'c{self.client_idx}_total')
 
-        return filter_param_by_keys(total_grad, self.args.agg_unselect_layer,
-                                    self.args.agg_all_select_layer,
-                                    self.args.agg_any_select_layer)
+        if post_layer_filter is None:
+            return weight_sub(self.model_trainer.get_model_params(), w_global)
+        else:
+            return weight_sub(
+                post_layer_filter(self.model_trainer.get_model_params()),
+                post_layer_filter(w_global))
 
     def local_test(self, b_use_test_dataset):
         if b_use_test_dataset:
@@ -233,7 +143,7 @@ class Client:
         return metrics
 
 
-class MyAvgAPI_4(object):
+class MyAvgAPI_7(object):
 
     def __init__(self, args: fedml.arguments.Arguments, device, dataset,
                  model):
@@ -261,18 +171,35 @@ class MyAvgAPI_4(object):
         self.test_data_local_dict = test_data_local_dict
 
         logging.info("model = {}".format(model))
-        self.model_trainer = MyTrainer_4(model, args)
+        self.model_trainer = MyTrainer_7(model, args)
         # self.model_trainer = create_model_trainer(model, args)
 
-        self.model_trainer.get_model_params()
-        filter_param = filter_param_by_keys(
-            self.model_trainer.get_model_params(), args.agg_unselect_layer,
-            args.agg_all_select_layer, args.agg_any_select_layer)
-        logging.info(
-            f"agg_unselect_layer={args.agg_unselect_layer}\tagg_all_select_layer={args.agg_all_select_layer}\tagg_any_select_layer={args.agg_any_select_layer}"
-        )
+        self.default_unselect_keys = args.agg_unselect_layer
+        self.default_all_select_keys = args.agg_all_select_layer
+        self.default_any_select_keys = args.agg_any_select_layer
 
-        logging.info(f"selected_layer={filter_param.keys()}")
+        self.cka_layer_filter = LayerFilter(
+            unselect_keys=args.cka_unselect_layer,
+            all_select_keys=args.cka_all_select_layer,
+            any_select_keys=args.cka_any_select_layer)
+
+        self.cka_topk = args.cka_select_topk
+        logging.info(f'-----------CKA Filter Setting-----------')
+        logging.info(f'cka_unselect_layer:{args.cka_unselect_layer}')
+        logging.info(f'cka_all_select_layer:{args.cka_all_select_layer}')
+        logging.info(f'cka_any_select_layer:{args.cka_any_select_layer}')
+        logging.info(f'CKA Top-k:{self.cka_topk}')
+
+        self.filter_mod_list: List[int] = args.agg_mod_list
+        self.filter_mod_dict: Dict[int, Dict[str,
+                                             List[str]]] = args.agg_mod_dict
+        logging.info(f'-----------Default Filter Setting-----------')
+        logging.info(f'default_unselect_keys:{self.default_unselect_keys}')
+        logging.info(f'default_all_select_keys:{self.default_all_select_keys}')
+        logging.info(f'default_any_select_keys:{self.default_any_select_keys}')
+        logging.info(f'-----------Mod Filter Setting-----------')
+        logging.info(f'filter_mod_list:{self.filter_mod_list}')
+        logging.info(f'filter_mod_dict:{self.filter_mod_dict}')
 
         self.model = model
         logging.info("self.model_trainer = {}".format(self.model_trainer))
@@ -287,30 +214,59 @@ class MyAvgAPI_4(object):
             c = Client(client_idx, train_data_local_dict[client_idx],
                        test_data_local_dict[client_idx],
                        train_data_local_num_dict[client_idx], self.args,
-                       self.device, 
-                       MyTrainer_4(copy.deepcopy(model), args)
-                    #    self.model_trainer,
+                       self.device,
+                       MyTrainer_7(copy.deepcopy(model), args)
+                       #    self.model_trainer,
                        )
-            
+
             self.client_list.append(c)
         logging.info("############setup_clients (END)#############")
 
     def train(self):
-        w_global = self.model_trainer.get_model_params()
-        w_global = filter_param_by_keys(w_global, self.args.agg_unselect_layer,
-                                        self.args.agg_all_select_layer,
-                                        self.args.agg_any_select_layer)
         mlops.log_training_status(
             mlops.ClientConstants.MSG_MLOPS_CLIENT_STATUS_TRAINING)
         mlops.log_aggregation_status(
             mlops.ServerConstants.MSG_MLOPS_SERVER_STATUS_RUNNING)
         mlops.log_round_info(self.args.comm_round, -1)
+        
+        post_layer_filter = LayerFilter(
+            unselect_keys=self.default_unselect_keys,
+            all_select_keys=self.default_all_select_keys,
+            any_select_keys=self.default_any_select_keys,
+        )
         for round_idx in range(self.args.comm_round):
 
             logging.info(
                 "################Communication round : {}".format(round_idx))
 
-            # g_locals = []
+            if round_idx != 0:
+                mod = 0
+                for i in self.filter_mod_list:
+                    if round_idx % i == 0:
+                        mod = i
+                        break
+                # 如果有满足mod条件的
+                if mod != 0:
+                    logging.info(f"Satisfy condition {round_idx}%{mod}==0")
+                    post_layer_filter.update_filter(
+                        unselect_keys=self.filter_mod_dict[mod].get(
+                            'agg_unselect_layer', None),
+                        all_select_keys=self.filter_mod_dict[mod].get(
+                            'agg_all_select_layer', None),
+                        any_select_keys=self.filter_mod_dict[mod].get(
+                            'agg_any_select_layer', None))
+                else:
+                    post_layer_filter.update_filter(
+                        unselect_keys=self.default_unselect_keys,
+                        all_select_keys=self.default_all_select_keys,
+                        any_select_keys=self.default_any_select_keys,
+                    )
+
+            w_global = self.model_trainer.get_model_params()
+
+            logging.info(f"post_layer_filter: {post_layer_filter}")
+
+            g_locals = []
             """
             for scalability: following the original FedAvg algorithm, we uniformly sample a fraction of clients in each round.
             Instead of changing the 'Client' instances, our implementation keeps the 'Client' instances and then updates their local dataset 
@@ -319,6 +275,7 @@ class MyAvgAPI_4(object):
                 round_idx, self.args.client_num_in_total,
                 self.args.client_num_per_round)
             logging.info("client_indexes = " + str(client_indexes))
+
             for idx in client_indexes:
                 # update dataset
                 client: Client = self.client_list[idx]
@@ -326,25 +283,21 @@ class MyAvgAPI_4(object):
                 # train on new dataset
                 mlops.event("train",
                             event_started=True,
-                            event_value="{}_{}".format(str(round_idx),
+                            event_value="{}_{}".format(str(round_idx), 
                                                        str(idx)))
-                g = client.train(w_global, round_idx=round_idx)
+
+                g = client.train(w_global,
+                                 round_idx=round_idx,
+                                 post_layer_filter=post_layer_filter,
+                                 set_param=False)
 
                 mlops.event("train",
                             event_started=False,
                             event_value="{}_{}".format(str(round_idx),
                                                        str(idx)))
                 # self.logging.info("local weights = " + str(w))
-                # g_locals.append((client.get_sample_number(), g))
+                g_locals.append((client.get_sample_number(), g))
 
-            # update global weights
-            mlops.event("agg", event_started=True, event_value=str(round_idx))
-            # g_global = self._aggregate(g_locals)
-            # save_model_param(g_global, round_idx, "server")
-
-            # w_global = weight_add(w_global, g_global)
-            # self.model_trainer.set_model_params(w_global)
-            mlops.event("agg", event_started=False, event_value=str(round_idx))
 
             # test results
             # at last round
@@ -352,10 +305,29 @@ class MyAvgAPI_4(object):
                 self._local_test_on_all_clients(round_idx)
             # per {frequency_of_the_test} round
             elif round_idx % self.args.frequency_of_the_test == 0:
-                if self.args.dataset.startswith("stackoverflow"):
-                    self._local_test_on_validation_set(round_idx)
-                else:
-                    self._local_test_on_all_clients(round_idx)
+                self._local_test_on_all_clients(round_idx)
+
+            # update global weights
+            mlops.event("agg", event_started=True, event_value=str(round_idx))
+            
+            # 结果已经保存到g_locals
+            thresh = (self.args.cka_low_thresh, self.args.cka_high_thresh)
+            g_all_global, g_cka_global = self._aggregate_by_cka(g_locals, 
+                                                  self.cka_layer_filter, 
+                                                  self.cka_topk,
+                                                  thresh)
+
+            for i, idx in enumerate(client_indexes):
+                client: Client = self.client_list[idx]
+                g_global = weight_add(post_layer_filter(w_global), g_cka_global[i])
+                client.model_trainer.set_model_params(g_global)
+
+            w_global = weight_add(post_layer_filter(w_global), g_all_global)
+            self.model_trainer.set_model_params(w_global)
+            save_model_param(w_global, round_idx, "server", is_grad=False)
+
+            mlops.event("agg", event_started=False, event_value=str(round_idx))
+
 
             mlops.log_round_info(self.args.comm_round, round_idx)
 
@@ -389,21 +361,78 @@ class MyAvgAPI_4(object):
             subset, batch_size=self.args.batch_size)
         self.val_global = sample_testset
 
-    def _aggregate(self, w_locals):
-        training_num = 0
-        for idx in range(len(w_locals)):
-            (sample_num, averaged_params) = w_locals[idx]
-            training_num += sample_num
+    def _aggregate_by_cka(self, w_locals, 
+                          cka_layer_filter:LayerFilter,
+                          cka_topk:int, 
+                          thresh:Tuple[int, int] = None):
+        # 结果保存到w_locals
+        (sample_num, params) = w_locals[0]
+        cka_param = cka_layer_filter(params)
+        w_avg_global = {}
+        w_cka_global = [{} for i in w_locals]
+        for layer_name in (params.keys() - cka_param.keys()):
+            averaged_layer = aggregate_layer(w_locals, layer_name=layer_name)
+            w_avg_global[layer_name] = averaged_layer
 
-        (sample_num, averaged_params) = w_locals[0]
-        averaged_params = copy.deepcopy(averaged_params)
-        for k in averaged_params.keys():
-            averaged_params[k] = averaged_params[k] * sample_num / training_num
-            for i in range(1, len(w_locals)):
-                local_sample_number, local_model_params = w_locals[i]
-                w = local_sample_number / training_num
-                averaged_params[k] += local_model_params[k] * w
-        return averaged_params
+            for idx, (_, w) in enumerate(w_locals):
+                w_cka_global[idx][layer_name] = averaged_layer.clone()
+
+        if len(cka_param.keys()) == 0:
+            return w_avg_global, w_cka_global
+
+        logging.info(f"Begin CKA aggregate, keys:{cka_param.keys()}")
+        if thresh is None:
+            thresh = (0,1)
+        elif thresh[0] is None:
+            thresh[0] = 0
+        elif thresh[1] is None:
+            thresh[1] = 1
+
+        for layer_name in cka_param.keys():
+            global_averaged_layer = aggregate_layer(w_locals, layer_name=layer_name)
+            w_avg_global[layer_name] = global_averaged_layer
+            global_averaged_norm =  torch.norm(global_averaged_layer)
+
+            cka_matrix = get_cka_matrix(w_locals, layer_name)
+            # logging.info(f"CKA Matrix for {layer_name}:\n{cka_matrix}")
+            for idx, (_, w) in enumerate(w_locals):
+                topk_indices_i = topk_indices(cka_matrix[idx], cka_topk)
+                use_indices_i = [i for i in topk_indices_i if thresh[0] <= cka_matrix[idx][i] <= thresh[1]]
+                if idx not in use_indices_i:
+                    logging.warn(f'Layer {layer_name}: Appended {idx} itself to selected indices which not in use list {use_indices_i}.\n' +  
+                                 f'top-k:{topk_indices_i} Threshold: {thresh} \nCKA matrix: {cka_matrix}')
+                    use_indices_i.append(idx)
+                    logging.warn(f"New used indices: {use_indices_i}")
+                averaged_layer = aggregate_layer(
+                    [w_locals[i] for i in use_indices_i], 
+                    layer_name=layer_name)
+                
+                dim = len(global_averaged_layer.shape)
+                if dim < 2:
+                    w_cka_global[idx][layer_name] = averaged_layer
+                    continue
+                averaged_norm = torch.norm(averaged_layer)
+                
+                averaged_layer = averaged_layer/averaged_norm
+                global_averaged_layer = global_averaged_layer/global_averaged_norm
+
+                if dim == 4:
+                    b = torch.matmul(averaged_layer.mT, global_averaged_layer).trace()
+                    if b < 0:
+                        a = torch.matmul(global_averaged_layer.mT, global_averaged_layer).trace()
+                        averaged_layer_opt = averaged_layer - b/a * global_averaged_layer
+                    else:
+                        averaged_layer_opt = averaged_layer
+                else:
+                    b = torch.dot(averaged_layer.T, global_averaged_layer)
+                    if b < 0:
+                        a = torch.dot(global_averaged_layer.T, global_averaged_layer)
+                        averaged_layer_opt = averaged_layer - b/a * global_averaged_layer
+                    else:
+                        averaged_layer_opt = averaged_layer                    
+
+                w_cka_global[idx][layer_name] = averaged_layer_opt * (averaged_norm + global_averaged_norm)/2
+        return w_avg_global, w_cka_global
 
     def _aggregate_noniid_avg(self, w_locals):
         """
@@ -472,7 +501,8 @@ class MyAvgAPI_4(object):
                 continue
 
             # train data
-            train_local_metrics = self.client_list[client_idx].local_test(False)
+            train_local_metrics = self.client_list[client_idx].local_test(
+                False)
             train_metrics["num_samples"].append(
                 copy.deepcopy(train_local_metrics["test_total"]))
             train_metrics["num_correct"].append(
@@ -502,13 +532,17 @@ class MyAvgAPI_4(object):
                         test_metrics["losses"][-1],
                         # per acc
                         f"Train/c{client_idx}-perAcc":
-                        (train_metrics["num_correct"][-1] / train_metrics["num_samples"][-1]),
+                        (train_metrics["num_correct"][-1] /
+                         train_metrics["num_samples"][-1]),
                         f"Train/c{client_idx}-perLoss":
-                        (train_metrics["losses"][-1] / train_metrics["num_samples"][-1]),
+                        (train_metrics["losses"][-1] /
+                         train_metrics["num_samples"][-1]),
                         f"Test/c{client_idx}-perAcc":
-                        (test_metrics["num_correct"][-1] / test_metrics["num_samples"][-1]),
+                        (test_metrics["num_correct"][-1] /
+                         test_metrics["num_samples"][-1]),
                         f"Test/c{client_idx}-perLoss":
-                        (test_metrics["losses"][-1] / test_metrics["num_samples"][-1]),
+                        (test_metrics["losses"][-1] /
+                         test_metrics["num_samples"][-1]),
                         "round":
                         round_idx
                     },
@@ -528,12 +562,13 @@ class MyAvgAPI_4(object):
 
         stats = {"training_acc": train_acc, "training_loss": train_loss}
         if self.args.enable_wandb:
-            wandb.log({
-                "Train/Acc": train_acc,
-                "Train/Loss": train_loss,
-                "round": round_idx
-            },
-            step=round_idx)
+            wandb.log(
+                {
+                    "Train/Acc": train_acc,
+                    "Train/Loss": train_loss,
+                    "round": round_idx
+                },
+                step=round_idx)
 
         mlops.log({"Train/Acc": train_acc, "round": round_idx})
         mlops.log({"Train/Loss": train_loss, "round": round_idx})
@@ -551,67 +586,4 @@ class MyAvgAPI_4(object):
 
         mlops.log({"Test/Acc": test_acc, "round": round_idx})
         mlops.log({"Test/Loss": test_loss, "round": round_idx})
-        logging.info(stats)
-
-    def _local_test_on_validation_set(self, round_idx):
-
-        logging.info(
-            "################local_test_on_validation_set : {}".format(
-                round_idx))
-
-        if self.val_global is None:
-            self._generate_validation_set()
-
-        client = self.client_list[0]
-        client.update_local_dataset(0, None, self.val_global, None)
-        # test data
-        test_metrics = client.local_test(True)
-
-        if self.args.dataset == "stackoverflow_nwp":
-            test_acc = test_metrics["test_correct"] / test_metrics["test_total"]
-            test_loss = test_metrics["test_loss"] / test_metrics["test_total"]
-            stats = {"test_acc": test_acc, "test_loss": test_loss}
-            if self.args.enable_wandb:
-                wandb.log(
-                    {
-                        "Test/Acc": test_acc,
-                        "Test/Loss": test_loss,
-                        "round": round_idx
-                    },
-                    step=round_idx)
-
-            mlops.log({"Test/Acc": test_acc, "round": round_idx})
-            mlops.log({"Test/Loss": test_loss, "round": round_idx})
-
-        elif self.args.dataset == "stackoverflow_lr":
-            test_acc = test_metrics["test_correct"] / test_metrics["test_total"]
-            test_pre = test_metrics["test_precision"] / test_metrics[
-                "test_total"]
-            test_rec = test_metrics["test_recall"] / test_metrics["test_total"]
-            test_loss = test_metrics["test_loss"] / test_metrics["test_total"]
-            stats = {
-                "test_acc": test_acc,
-                "test_pre": test_pre,
-                "test_rec": test_rec,
-                "test_loss": test_loss,
-            }
-            if self.args.enable_wandb:
-                wandb.log(
-                    {
-                        "Test/Acc": test_acc,
-                        "Test/Pre": test_pre,
-                        "Test/Rec": test_rec,
-                        "Test/Loss": test_loss,
-                        "round": round_idx
-                    },
-                    step=round_idx)
-
-            mlops.log({"Test/Acc": test_acc, "round": round_idx})
-            mlops.log({"Test/Pre": test_pre, "round": round_idx})
-            mlops.log({"Test/Rec": test_rec, "round": round_idx})
-            mlops.log({"Test/Loss": test_loss, "round": round_idx})
-        else:
-            raise Exception("Unknown format to log metrics for dataset {}!" %
-                            self.args.dataset)
-
         logging.info(stats)

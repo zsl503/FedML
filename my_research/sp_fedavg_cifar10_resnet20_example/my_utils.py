@@ -48,12 +48,9 @@ class LayerFilter:
 
 
 def aggregate_layer(w_locals, layer_name):
-    training_num = 0
-    for local_sample_number, local_model_params in w_locals:
-        training_num += local_sample_number
+    training_num = sum(sample_num for sample_num, _ in w_locals)
 
-    (sample_num, averaged_params) = w_locals[0]
-    averaged_layer = averaged_params[layer_name] * sample_num / training_num
+    averaged_layer = torch.zeros_like(w_locals[0][1][layer_name])
     for local_sample_number, local_model_params in w_locals:
         w = local_sample_number / training_num
         averaged_layer += local_model_params[layer_name] * w
@@ -72,7 +69,8 @@ def get_cka_matrix(w_list, layer_name):
                 cka_matrix[i, j] = CKA(w_i[layer_name].mean(dim=[-1,-2]), w_j[layer_name].mean(dim=[-1,-2]))
             else:
                 cka_matrix[i, j] = CKA(w_i[layer_name], w_j[layer_name])
-            
+            if cka_matrix[i, j] > 1:
+                cka_matrix[i, j] = 1
     return cka_matrix
 
 
